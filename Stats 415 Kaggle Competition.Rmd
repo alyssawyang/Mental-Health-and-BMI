@@ -1,0 +1,159 @@
+---
+title: "Stats 415 Kaggle Competition"
+author: "Alyssa Yang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(glmnet)
+library(randomForest)
+library(caret)
+```
+
+
+```{r}
+X_train <- read.csv("X_train.csv")
+X_test <- read.csv("X_test.csv")
+y_train <- read.csv("y_train.csv")
+y_sample <- read.csv("y_sample.csv")
+
+merged_data <- merge(X_train, y_train, by = "SEQN", all = FALSE)
+merged_data <- merged_data[,-1]
+
+train_indices <- sample(1:nrow(merged_data), size = floor(0.7 * nrow(merged_data)))
+
+train_data <- merged_data[train_indices,]
+test_data <- merged_data[-train_indices,]
+```
+
+
+
+Lasso and Ridge
+```{r}
+set.seed(1)
+# Convert the data frames to matrices or data frames with numeric values
+X_train_matrix <- as.matrix(train_data[, -which(names(train_data) == "y")])  # Exclude the response variable 'y'
+y_train_vector <- train_data$y
+
+# Create a grid of lambda values for Lasso regression
+grid <- 10^seq(10, -2, length = 100)
+
+# Perform Lasso regression with cross-validation to select lambda
+lasso_mod_cv <- cv.glmnet(X_train_matrix, y_train_vector, alpha = 0, lambda = grid)
+
+# Find the lambda value with the lowest mean cross-validated error
+best_lambda <- lasso_mod_cv$lambda.min
+
+# Train the final Lasso regression model using the selected lambda
+final_lasso_mod <- glmnet(X_train_matrix, y_train_vector, alpha = 0, lambda = best_lambda)
+
+# Now, for testing purposes using the test data:
+
+# Convert test data to the same format
+X_test_matrix <- as.matrix(test_data[, -which(names(test_data) == "y")])  # Exclude the response variable 'y'
+y_test_vector <- test_data$y
+
+# Predict using the final Lasso model
+lasso_pred <- predict(final_lasso_mod, newx = X_test_matrix)
+
+# Calculate the mean squared error on the test set
+mse <- mean((lasso_pred - y_test_vector)^2)
+mse
+```
+
+```{r}
+# Extract coefficients of the final Lasso model for the selected lambda
+coefficients <- coef(final_lasso_mod, s = best_lambda)
+
+# Identify predictors with non-zero coefficients
+selected_predictors <- which(coefficients != 0)
+
+# Get the names of selected predictors
+predictor_names <- rownames(coefficients)[selected_predictors]
+
+# Display or print the names of selected predictors
+print(predictor_names)
+```
+
+```{r}
+X_test_matrix <- as.matrix(X_test)
+X_test_matrix <- X_test_matrix[,-1]
+ridge_predictions <- predict(final_lasso_mod, newx = X_test_matrix)
+```
+
+
+
+Feature engineering and random forests
+```{r}
+merged_data$SRP_avg <- rowMeans(merged_data[, grepl("^SRP_", names(merged_data))])
+
+# Define predictors and response
+predictors <- c("self_eval", "teacher_eval", "district", "SRP_avg")
+response <- "y"
+
+# # Create a parameter grid for tuning
+# param_grid <- expand.grid(.mtry = c(2, 3, 4))
+# 
+# # Create a control object for tuning
+# control <- trainControl(method = "cv", number = 5)
+# 
+# # Train the random forest model with hyperparameter tuning
+# rf_tuned <- train(as.formula(paste(response, "~", paste(predictors, collapse = "+"))),
+#                   data = merged_data,
+#                   method = "rf",
+#                   trControl = control,
+#                   ntree = c(100, 200, 300),
+#                   tuneGrid = param_grid)
+
+# control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+# mtry <- sqrt(ncol(merged_data))
+# rf_random <- train(as.formula(paste(response, "~", paste(predictors, collapse = "+"))), 
+#                               data=merged_data, 
+#                               method="rf", 
+#                               metric="Rsquared", 
+#                               tuneLength=15, 
+#                               trControl=control)
+# print(rf_random)
+# plot(rf_random)
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:4))
+rf_gridsearch <- train(as.formula(paste(response, "~", paste(predictors, collapse = "+"))), 
+                       data=merged_data, 
+                       method="rf", 
+                       metric="Rsquared", 
+                       tuneGrid=tunegrid, 
+                       trControl=control)
+
+best_mtry <- rf_gridsearch$bestTune$mtry
+
+# Train the random forest model
+final_rf_model <- randomForest(as.formula(paste(response, "~", paste(predictors, collapse = "+"))),
+                               data = merged_data,
+                               mtry = best_mtry)
+final_rf_model
+
+# rf_model <- randomForest(as.formula(paste(response, "~", paste(predictors, collapse = "+"))), data = merged_data)
+# rf_model
+```
+
+```{r}
+X_test$SRP_avg <- rowMeans(X_test[, grepl("^SRP_", names(X_test))])
+
+predictions <- predict(final_rf_model, newdata = X_test)
+```
+
+
+
+```{r}
+result <- cbind(SEQN = X_test$SEQN, Prediction = predictions)
+result_df <- as.data.frame(result)
+colnames(result_df)[2] <- "y"
+write.csv(result_df, file = "y_test.csv", row.names = FALSE)
+```
+
+
+
